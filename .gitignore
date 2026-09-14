@@ -1,0 +1,28 @@
+# Reverse-engineering work products (extracted/decompiled proprietary binaries).
+# Keep local, do not publish.
+analysis/
+
+# Build outputs
+android/omni-bridge/build/
+android/omni-bridge/dist/
+*.apk
+*.aab
+*.class
+*.keystore
+*.idsig
+build/
+dist/
+out/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDE / OS
+.idea/
+*.iml
+.DS_Store
+
+# Unity SDK (kept out of the open-source tree; see README)
+unity-sdk-*/
