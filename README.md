@@ -3,112 +3,109 @@
 An engine-agnostic, clean-room SDK for reading **Virtuix Omni One** treadmill
 tracking data — no Unity, no Unreal, no proprietary middleware.
 
-Built for **robotic teleoperation**: walk on the Omni One, drive a robot.
+Built for **robotic teleoperation**: walk on the Omni, drive a robot.
 
-```
-Omni One treadmill ─BLE→ Omni system app ─Messenger IPC→ omni-bridge (this repo)
-                                                           │ JSON over UDP
-                                                           ▼
-                                          robot controller (any OS, any language)
-```
+## Pick your path
 
-## What's in here
-
-| Path | What it is |
-|------|------------|
-| `docs/PROTOCOL.md` | **The reverse-engineered protocol**: architecture, transport, message framing, every tracking message with exact wire keys, and the full 272-code table extracted from the official SDK |
-| `android/omni-track-core/` | Clean-room Java library: binds the Omni system service directly (`com.virtuix.android_middleware/.MainService`), speaks the tracking protocol, exposes a listener API. Zero dependencies, zero Virtuix code |
-| `android/omni-bridge/` | Minimal Android app that runs on the headset and streams tracking as JSON over UDP. Builds to an installable APK with `./build_apk.sh` (no Gradle needed) |
-| `python/omni_track/` | Robot-side client (stdlib only): parse frames, send commands |
-| `python/examples/` | Live console viewer + ROS 2 `cmd_vel` teleop example |
-| `analysis/` (git-ignored) | Reverse-engineering work products: extracted AARs, decompiled sources, code tables |
-
-## Quickstart
-
-**1. Build the bridge APK** (needs Android SDK build-tools 35 + platform 34):
+**Path A — treadmill only (no headset).** The treadmill is embedded hardware
+(Nordic BLE SoCs; left/right foot trackers on a 2.4 GHz Gazell link; battery,
+button, lock). It exposes its data over Bluetooth LE, and that's the cleanest
+teleop architecture: treadmill-frame velocity straight to your robot, no
+headset, no Android anywhere. The `ble/` toolkit discovers and decodes that
+interface on your hardware:
 
 ```bash
-cd android/omni-bridge
-./build_apk.sh          # -> dist/omni-bridge.apk (debug-signed)
+cd ble
+python3 -m pip install bleak
+python3 scan.py            # find the treadmill + trackers
+python3 dump_gatt.py NAME # map its services
+python3 trace.py NAME     # walk on it with labeled activities
+python3 analyze.py traces/*.jsonl --compare idle walk-slow
 ```
 
-**2. Install and run on the Omni One headset** (developer mode + adb):
+Full walkthrough and contingencies: `ble/README.md`. Everything downstream
+(`python/omni_track`) consumes the decoded data unchanged.
 
-```bash
-adb install dist/omni-bridge.apk
+**Path B — with the Omni One headset.** Android runs on the headset
+(Pico-based), and the pre-installed system app
+`com.virtuix.android_middleware/.MainService` owns the treadmill link and
+computes view-relative movement. The `android/` packages replace Unity
+entirely:
+
+```
+treadmill ─BLE→ headset system app ─Messenger IPC→ omni-bridge (this repo)
+                                                 │ JSON over UDP
+                                                 ▼
+                                   robot controller (any OS)
 ```
 
-Launch "OmniTrack Bridge" from the headset launcher, set the target IP of your
-robot PC (or leave broadcast), press **Start**.
+- `android/omni-track-core` — clean-room Java client for the Messenger
+  protocol. Zero dependencies, zero Virtuix code.
+- `android/omni-bridge` — headset app streaming JSON over UDP; builds to an
+  installable APK with plain build-tools (`./build_apk.sh`, no Gradle).
 
-**3. Consume it from your robot** (Python, any OS on the same LAN):
+## Robot-side client (both paths)
 
 ```python
 from omni_track import OmniTrackClient, Movement, OmniTrackCommander
 
 def on_frame(frame):
     if isinstance(frame, Movement):
-        # x = forward m/s, y = lateral m/s, speed = |v|
         print(f"{frame.speed:.2f} m/s  v=({frame.x:+.2f}, {frame.y:+.2f})")
 
 client = OmniTrackClient(on_frame=on_frame)
 client.start()   # UDP :45454
-
-commander = OmniTrackCommander("headset-ip")   # optional control channel
-commander.request_status()                      # ask for a status snapshot
 ```
 
-Or just watch it:
+Examples: `python/examples/viewer.py` (console viewer) and
+`python/examples/teleop_twist.py` (ROS 2 `cmd_vel` teleop).
 
-```bash
-cd python
-python3 examples/viewer.py --bridge 192.168.x.x
-```
+## Repository layout
 
-ROS 2 users: `python/examples/teleop_twist.py` maps walking to `geometry_msgs/Twist`.
-
-## Tracking data
-
-- **Movement** — view-relative velocity, m/s: `x` forward, `y` lateral (right+),
-  `z` vertical (≈0). Includes `speed` and (with IMU pose enabled) `head_yaw_deg`.
-- **Step count**, **treadmill scan/connect/disconnect**, **omni connected/disconnected**,
-  **foot trackers** (connect events + battery %), **headset battery**, **treadmill lock**,
-  **control/short buttons**, **boundary/calibration state**, **server settings**.
-
-Full wire format and all commands: `docs/TELEOP.md`. Protocol internals: `docs/PROTOCOL.md`.
+| Path | What it is |
+|------|------------|
+| `docs/PROTOCOL.md` | The reverse-engineered Messenger protocol: transport, framing, handshake, every tracking message with exact wire keys, all 272 codes, provenance |
+| `docs/TELEOP.md` | Teleop guide: bridge frames, commands, pose sources, on-device checklist, safety |
+| `ble/` | Direct-BLE reconnaissance toolkit (scan → GATT dump → labeled traces → candidate field analysis) |
+| `android/omni-track-core/` | Engine-agnostic Java client for the headset protocol (Path B) |
+| `android/omni-bridge/` | Headset streaming app (Path B) |
+| `python/omni_track/` | Robot-side client (stdlib only) |
+| `analysis/` (git-ignored) | Reverse-engineering work products; stays local |
 
 ## Status & verification
 
 Done and verified on this machine:
 
 - Protocol reconstructed from the official Unity SDK 1.1.3 middleware AARs
-  (full provenance table in `docs/PROTOCOL.md`).
-- `omni-track-core` compiles against `android-34`; 59 JVM codec tests pass
-  (`android/omni-track-core/run_tests.sh`).
-- `omni-bridge` builds to a signed, verified APK (`aapt2 dump badging` clean).
-- Python package: 19 unit + loopback tests pass.
+  (full provenance in `docs/PROTOCOL.md`).
+- `omni-track-core` compiles against `android-34`; 59 JVM codec tests pass.
+- `omni-bridge` builds to a signed APK (`apksigner verify` + badging clean).
+- Python: 19 unit + loopback tests pass.
+- BLE analyzer: 9 synthetic-trace tests pass — it demonstrably recovers
+  planted float32 velocity fields, step counters, and int16 strafe fields.
 
-**Not yet verified on real hardware** (no Omni One was connected for this
-work). On-device checklist and known risks: `docs/TELEOP.md` §5. The big
-unknowns: whether the Omni system service pushes `SET_CONTROLLER_DATA` to a
-non-store client (entitlement gating), and exact axis signs/units of the
-movement vector in IMU pose mode. Everything is parameterized to make that
-first on-device session a debugging checklist, not a rewrite.
+**Not yet verified on real hardware** (no Omni One connected for this work):
+
+- Path B on-device behavior: entitlement gating, event push to sideloaded
+  clients, IMU-pose axis signs — checklist in `docs/TELEOP.md` §5.
+- Path A entirely: the BLE interface (GATT layout, packet format, pairing,
+  possible handshake) must be captured on your treadmill. The toolkit is the
+  capture session; `ble/README.md` walks through it and the contingencies.
 
 ## Legal & safety
 
 - Clean-room interoperability reconstruction of a protocol spoken by a device
-  the researcher owns. **No Virtuix code is contained in this repository**;
-  decompiled intermediates stay local (`analysis/` is git-ignored).
+  the researcher owns. **No Virtuix code is in this repository**; decompiled
+  intermediates stay local (`analysis/` is git-ignored).
 - Not affiliated with or endorsed by Virtuix. "Virtuix" and "Omni" are
   trademarks of Virtuix, used descriptively for interoperability.
-- Robotic teleoperation is dangerous: wheel-up testing, deadman logic, and a
-  physical e-stop first. The bridge sends no safety-rated guarantees — treat it
-  as an input device, not a safety system.
-- Respect the Omni One's treadmill lock; don't bypass safety features.
+- Walking on the Omni requires its support harness — during capture sessions
+  and always. Robotic teleoperation: wheels-up first, deadman logic, physical
+  e-stop; this SDK is an input device, not a safety system.
+- Respect the treadmill lock; don't bypass safety features.
 
 ## License
 
 To be chosen (recommend MIT/Apache-2.0 for the clean-room code). The
-`unity-sdk-1.1.3/` original SDK remains under Virtuix's own license and is
+original `unity-sdk-1.1.3/` remains under Virtuix's own license and is
 excluded from this repository's source tree (see `.gitignore`).
